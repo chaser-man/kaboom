@@ -1,1 +1,758 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gravity Flipper - Infinite Levels</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background: #1a1a2e;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            font-family: Arial, sans-serif;
+        }
+        canvas {
+            border: 2px solid #16213e;
+            border-radius: 8px;
+        }
+    </style>
+</head>
+<body>
+    <script src="https://unpkg.com/kaboom@3000.0.1/dist/kaboom.js"></script>
+    <script>
+        // Initialize Kaboom
+        kaboom({
+            width: 800,
+            height: 600,
+            background: [20, 30, 50],
+            debug: false
+        });
 
+        // Game constants
+        const PLAYER_SPEED = 200;
+        const JUMP_FORCE = 400;
+        const GRAVITY_STRENGTH = 1200;
+        
+        // Game state
+        let gravityUp = false;
+        let levelStars = 0;
+        let currentLevel = 1;
+        let totalScore = 0;
+        let levelSeed = 1;
+
+        // Level generation constants
+        const MIN_PLATFORMS = 4;
+        const MAX_PLATFORMS = 8;
+        const PLATFORM_MIN_WIDTH = 80;
+        const PLATFORM_MAX_WIDTH = 200;
+        const PLATFORM_HEIGHT = 20;
+        const MIN_PLATFORM_SPACING = 60;
+        const STARS_PER_LEVEL = 5;
+
+        // Load sprites
+        loadSprite("player", "data:image/svg+xml;base64," + btoa(`
+            <svg width="32" height="32" xmlns="http://www.w3.org/2000/svg">
+                <rect width="32" height="32" fill="#4ade80" rx="4"/>
+                <circle cx="10" cy="12" r="3" fill="#000"/>
+                <circle cx="22" cy="12" r="3" fill="#000"/>
+                <rect x="8" y="20" width="16" height="3" fill="#000" rx="1"/>
+            </svg>
+        `));
+
+        // Seeded random number generator for consistent level generation
+        class SeededRandom {
+            constructor(seed) {
+                this.seed = seed;
+            }
+            
+            next() {
+                this.seed = (this.seed * 9301 + 49297) % 233280;
+                return this.seed / 233280;
+            }
+            
+            range(min, max) {
+                return min + this.next() * (max - min);
+            }
+            
+            int(min, max) {
+                return Math.floor(this.range(min, max + 1));
+            }
+        }
+
+        // Level generator
+        function generateLevel(level, seed) {
+            const rng = new SeededRandom(seed);
+            const platforms = [];
+            const starPositions = [];
+            
+            // Calculate difficulty scaling
+            const difficultyScale = Math.min(level / 10, 1.5);
+            const platformCount = MIN_PLATFORMS + Math.floor(difficultyScale * (MAX_PLATFORMS - MIN_PLATFORMS));
+            
+            // Always include starting platform
+            platforms.push({
+                x: 50,
+                y: height() - 100,
+                width: 150,
+                height: PLATFORM_HEIGHT,
+                type: 'floor'
+            });
+            
+            // Generate main platforms with proper spacing
+            const zones = [
+                { x: 150, y: 200, width: 200, height: 150, type: 'floor' },   // Lower-middle zone
+                { x: 350, y: 100, width: 200, height: 100, type: 'ceiling' }, // Upper zone
+                { x: 550, y: 300, width: 200, height: 200, type: 'floor' },   // Right zone
+                { x: 200, y: 50, width: 300, height: 80, type: 'ceiling' },   // Top zone
+            ];
+            
+            // Add platforms in each zone
+            for (let i = 0; i < Math.min(platformCount - 1, zones.length); i++) {
+                const zone = zones[i];
+                const platform = {
+                    x: zone.x + rng.range(-50, 50),
+                    y: zone.y + rng.range(-30, 30),
+                    width: rng.int(PLATFORM_MIN_WIDTH, PLATFORM_MAX_WIDTH),
+                    height: PLATFORM_HEIGHT,
+                    type: zone.type
+                };
+                
+                // Ensure platform stays in bounds
+                platform.x = Math.max(0, Math.min(platform.x, width() - platform.width));
+                platform.y = Math.max(50, Math.min(platform.y, height() - 100));
+                
+                platforms.push(platform);
+            }
+            
+            // Add additional random platforms for higher levels
+            const extraPlatforms = Math.max(0, platformCount - zones.length - 1);
+            for (let i = 0; i < extraPlatforms; i++) {
+                const platform = {
+                    x: rng.range(100, width() - 200),
+                    y: rng.range(100, height() - 150),
+                    width: rng.int(PLATFORM_MIN_WIDTH, PLATFORM_MAX_WIDTH),
+                    height: PLATFORM_HEIGHT,
+                    type: rng.next() > 0.5 ? 'floor' : 'ceiling'
+                };
+                
+                // Check for overlaps and adjust
+                let validPosition = false;
+                let attempts = 0;
+                while (!validPosition && attempts < 10) {
+                    validPosition = true;
+                    for (const existing of platforms) {
+                        const dx = Math.abs(platform.x - existing.x);
+                        const dy = Math.abs(platform.y - existing.y);
+                        if (dx < MIN_PLATFORM_SPACING && dy < MIN_PLATFORM_SPACING) {
+                            platform.x = rng.range(100, width() - 200);
+                            platform.y = rng.range(100, height() - 150);
+                            validPosition = false;
+                            break;
+                        }
+                    }
+                    attempts++;
+                }
+                
+                if (validPosition) {
+                    platforms.push(platform);
+                }
+            }
+            
+            // Generate star positions on or near platforms
+            for (let i = 0; i < STARS_PER_LEVEL; i++) {
+                const platform = platforms[rng.int(0, platforms.length - 1)];
+                const starX = platform.x + rng.range(20, platform.width - 20);
+                const starY = platform.type === 'ceiling' ? 
+                    platform.y + PLATFORM_HEIGHT + 30 : 
+                    platform.y - 30;
+                
+                starPositions.push({
+                    x: Math.max(20, Math.min(starX, width() - 20)),
+                    y: Math.max(50, Math.min(starY, height() - 50))
+                });
+            }
+            
+            // Generate deadly red platforms (1-2 per level)
+            const deadlyPlatforms = [];
+            const numDeadlyPlatforms = rng.int(1, 2);
+            
+            for (let i = 0; i < numDeadlyPlatforms; i++) {
+                let attempts = 0;
+                let validPosition = false;
+                
+                while (!validPosition && attempts < 20) {
+                    const deadlyPlatform = {
+                        x: rng.range(200, width() - 300),
+                        y: rng.range(150, height() - 200),
+                        width: rng.int(60, 120),
+                        height: PLATFORM_HEIGHT,
+                        type: rng.next() > 0.5 ? 'floor' : 'ceiling'
+                    };
+                    
+                    // Check distance from regular platforms and ensure not blocking critical paths
+                    validPosition = true;
+                    for (const platform of platforms) {
+                        const dx = Math.abs(deadlyPlatform.x - platform.x);
+                        const dy = Math.abs(deadlyPlatform.y - platform.y);
+                        // Ensure deadly platforms don't overlap with regular platforms
+                        if (dx < 100 && dy < 60) {
+                            validPosition = false;
+                            break;
+                        }
+                    }
+                    
+                    // Don't place deadly platforms too close to starting area
+                    if (deadlyPlatform.x < 250) {
+                        validPosition = false;
+                    }
+                    
+                    // Don't place deadly platforms directly under star positions
+                    for (const starPos of starPositions) {
+                        const dx = Math.abs(deadlyPlatform.x - starPos.x);
+                        const dy = Math.abs(deadlyPlatform.y - starPos.y);
+                        if (dx < 80 && dy < 80) {
+                            validPosition = false;
+                            break;
+                        }
+                    }
+                    
+                    if (validPosition) {
+                        deadlyPlatforms.push(deadlyPlatform);
+                    }
+                    
+                    attempts++;
+                }
+            }
+            
+            // Place goal portal on the rightmost accessible platform
+            const goalPlatform = platforms.reduce((rightmost, platform) => 
+                platform.x > rightmost.x ? platform : rightmost
+            );
+            
+            const goalPos = {
+                x: goalPlatform.x + goalPlatform.width - 50,
+                y: goalPlatform.type === 'ceiling' ? 
+                    goalPlatform.y + PLATFORM_HEIGHT + 40 : 
+                    goalPlatform.y - 40
+            };
+            
+            return { platforms, starPositions, goalPos, deadlyPlatforms };
+        }
+
+        // Game scene with level generation
+        scene("game", (levelData) => {
+            // Generate or use provided level data
+            if (!levelData) {
+                levelData = generateLevel(currentLevel, levelSeed);
+            }
+            
+            // Reset level-specific state
+            gravityUp = false;
+            levelStars = 0;
+            setGravity(GRAVITY_STRENGTH);
+
+            // Create player at starting position
+            const player = add([
+                sprite("player"),
+                pos(125, height() - 150),
+                area(),
+                body(),
+                rotate(0),
+                anchor("center"),
+                "player"
+            ]);
+
+            // Create boundary walls
+            const boundaries = [
+                // Floor
+                add([
+                    rect(width(), 20),
+                    pos(0, height() - 10),
+                    area(),
+                    body({ isStatic: true }),
+                    color(80, 80, 120),
+                    "boundary"
+                ]),
+                // Ceiling
+                add([
+                    rect(width(), 20),
+                    pos(0, -10),
+                    area(),
+                    body({ isStatic: true }),
+                    color(80, 80, 120),
+                    "boundary"
+                ]),
+                // Left wall
+                add([
+                    rect(20, height()),
+                    pos(-10, 0),
+                    area(),
+                    body({ isStatic: true }),
+                    color(80, 80, 120),
+                    "boundary"
+                ]),
+                // Right wall
+                add([
+                    rect(20, height()),
+                    pos(width() - 10, 0),
+                    area(),
+                    body({ isStatic: true }),
+                    color(80, 80, 120),
+                    "boundary"
+                ])
+            ];
+
+            // Create platforms from level data
+            const platforms = [];
+            levelData.platforms.forEach(platformData => {
+                const platform = add([
+                    rect(platformData.width, platformData.height),
+                    pos(platformData.x, platformData.y),
+                    area(),
+                    body({ isStatic: true }),
+                    color(100, 150, 200),
+                    outline(2, rgb(150, 200, 255)),
+                    "platform"
+                ]);
+                platforms.push(platform);
+            });
+
+            // Create deadly red platforms
+            const deadlyPlatforms = [];
+            levelData.deadlyPlatforms.forEach(deadlyData => {
+                const deadlyPlatform = add([
+                    rect(deadlyData.width, deadlyData.height),
+                    pos(deadlyData.x, deadlyData.y),
+                    area(),
+                    body({ isStatic: true }),
+                    color(255, 50, 50),
+                    outline(3, rgb(255, 100, 100)),
+                    "deadly",
+                    {
+                        pulseTime: 0
+                    }
+                ]);
+                
+                // Add pulsing danger effect
+                deadlyPlatform.onUpdate(() => {
+                    deadlyPlatform.pulseTime += dt();
+                    const pulse = Math.sin(deadlyPlatform.pulseTime * 8) * 0.3 + 0.7;
+                    deadlyPlatform.color = rgb(255 * pulse, 50 * pulse, 50 * pulse);
+                });
+                
+                deadlyPlatforms.push(deadlyPlatform);
+            });
+
+            // Create stars
+            const stars = [];
+            levelData.starPositions.forEach((starPos, index) => {
+                const star = add([
+                    circle(8),
+                    pos(starPos.x, starPos.y),
+                    area(),
+                    color(255, 215, 0),
+                    outline(2, rgb(255, 255, 150)),
+                    anchor("center"),
+                    "star",
+                    {
+                        collected: false,
+                        pulseTime: 0
+                    }
+                ]);
+                
+                // Pulsing animation
+                star.onUpdate(() => {
+                    star.pulseTime += dt();
+                    const pulse = Math.sin(star.pulseTime * 4) * 0.2 + 1;
+                    star.scale = vec2(pulse, pulse);
+                });
+                
+                stars.push(star);
+            });
+
+            // Create goal portal
+            const goal = add([
+                rect(40, 80),
+                pos(levelData.goalPos.x, levelData.goalPos.y),
+                area(),
+                color(200, 100, 255),
+                outline(3, rgb(255, 150, 255)),
+                anchor("center"),
+                "goal",
+                {
+                    shimmerTime: 0
+                }
+            ]);
+
+            // Goal shimmer effect
+            goal.onUpdate(() => {
+                goal.shimmerTime += dt();
+                const shimmer = Math.sin(goal.shimmerTime * 6) * 0.5 + 0.5;
+                goal.color = rgb(200 + shimmer * 55, 100 + shimmer * 100, 255);
+            });
+
+            // UI Elements
+            const gravityIndicator = add([
+                text("GRAVITY: DOWN", { size: 16 }),
+                pos(20, 20),
+                color(255, 255, 255)
+            ]);
+
+            const scoreLabel = add([
+                text(`STARS: ${levelStars}/${STARS_PER_LEVEL}`, { size: 16 }),
+                pos(20, 50),
+                color(255, 215, 0)
+            ]);
+
+            const levelLabel = add([
+                text(`LEVEL: ${currentLevel}`, { size: 16 }),
+                pos(20, 80),
+                color(150, 255, 150)
+            ]);
+
+            const totalScoreLabel = add([
+                text(`TOTAL: ${totalScore}`, { size: 16 }),
+                pos(20, 110),
+                color(255, 200, 100)
+            ]);
+
+            add([
+                text("ARROW KEYS: Move | SPACE: Flip Gravity | Avoid RED platforms!", { size: 12 }),
+                pos(20, height() - 30),
+                color(200, 200, 200)
+            ]);
+
+            // Input handling
+            onKeyDown("left", () => {
+                player.move(-PLAYER_SPEED, 0);
+            });
+
+            onKeyDown("right", () => {
+                player.move(PLAYER_SPEED, 0);
+            });
+
+            onKeyPress("up", () => {
+                if (gravityUp && player.isGrounded()) {
+                    player.jump(JUMP_FORCE);
+                }
+            });
+
+            onKeyPress("down", () => {
+                if (!gravityUp && player.isGrounded()) {
+                    player.jump(JUMP_FORCE);
+                }
+            });
+
+            // Gravity flip
+            onKeyPress("space", () => {
+                gravityUp = !gravityUp;
+                
+                if (gravityUp) {
+                    setGravity(-GRAVITY_STRENGTH);
+                    gravityIndicator.text = "GRAVITY: UP";
+                    gravityIndicator.color = rgb(255, 100, 100);
+                } else {
+                    setGravity(GRAVITY_STRENGTH);
+                    gravityIndicator.text = "GRAVITY: DOWN";
+                    gravityIndicator.color = rgb(100, 255, 100);
+                }
+                
+                // Visual feedback
+                shake(5);
+                
+                // Gravity flip particles
+                for (let i = 0; i < 10; i++) {
+                    add([
+                        circle(2),
+                        pos(player.pos.add(rand(-20, 20), rand(-20, 20))),
+                        color(rand(100, 255), rand(100, 255), rand(100, 255)),
+                        lifespan(0.5),
+                        move(vec2(rand(-50, 50), gravityUp ? -100 : 100)),
+                        opacity(0.8)
+                    ]);
+                }
+            });
+
+            // Star collection
+            player.onCollide("star", (star) => {
+                if (!star.collected) {
+                    star.collected = true;
+                    star.destroy();
+                    levelStars++;
+                    totalScore += 10;
+                    scoreLabel.text = `STARS: ${levelStars}/${STARS_PER_LEVEL}`;
+                    totalScoreLabel.text = `TOTAL: ${totalScore}`;
+                    
+                    // Star collection effect
+                    for (let i = 0; i < 15; i++) {
+                        add([
+                            circle(1),
+                            pos(star.pos),
+                            color(255, 215, 0),
+                            lifespan(1),
+                            move(vec2(rand(-100, 100), rand(-100, 100))),
+                            opacity(1)
+                        ]);
+                    }
+                }
+            });
+
+            // Deadly platform collision - game over
+            player.onCollide("deadly", (deadlyPlatform) => {
+                // Player touched a deadly platform!
+                addKaboom(player.pos);
+                shake(15);
+                
+                // Add death particles
+                for (let i = 0; i < 20; i++) {
+                    add([
+                        circle(rand(1, 3)),
+                        pos(player.pos.add(rand(-30, 30), rand(-30, 30))),
+                        color(255, rand(0, 100), 0),
+                        lifespan(1),
+                        move(vec2(rand(-150, 150), rand(-150, 150))),
+                        opacity(0.9)
+                    ]);
+                }
+                
+                // Brief delay then go to game over scene
+                wait(0.5, () => {
+                    go("gameOver", { level: currentLevel, score: totalScore });
+                });
+            });
+
+            // Goal collision - level completion
+            player.onCollide("goal", () => {
+                if (levelStars >= STARS_PER_LEVEL) {
+                    // Level complete! Generate next level
+                    currentLevel++;
+                    levelSeed = currentLevel * 1000 + Math.floor(Date.now() / 1000) % 1000;
+                    totalScore += 50; // Level completion bonus
+                    
+                    // Brief celebration
+                    addKaboom(goal.pos);
+                    shake(10);
+                    
+                    // Quick level transition with visual feedback
+                    const transition = add([
+                        text(`LEVEL ${currentLevel - 1} COMPLETE!`, { size: 32 }),
+                        pos(center()),
+                        anchor("center"),
+                        color(255, 255, 0),
+                        lifespan(1.5),
+                        {
+                            bounceTime: 0
+                        }
+                    ]);
+                    
+                    transition.onUpdate(() => {
+                        transition.bounceTime += dt();
+                        transition.scale = vec2(1 + Math.sin(transition.bounceTime * 10) * 0.1);
+                    });
+                    
+                    // Generate and load next level after brief delay
+                    wait(1.5, () => {
+                        const nextLevelData = generateLevel(currentLevel, levelSeed);
+                        go("game", nextLevelData);
+                    });
+                    
+                } else {
+                    // Not enough stars message
+                    const needed = STARS_PER_LEVEL - levelStars;
+                    const message = add([
+                        text(`Need ${needed} more star${needed > 1 ? 's' : ''}!`, { size: 24 }),
+                        pos(center()),
+                        anchor("center"),
+                        color(255, 100, 100),
+                        lifespan(2),
+                        {
+                            bounceTime: 0
+                        }
+                    ]);
+                    
+                    message.onUpdate(() => {
+                        message.bounceTime += dt();
+                        message.scale = vec2(1 + Math.sin(message.bounceTime * 10) * 0.1);
+                    });
+                }
+            });
+
+            // Player rotation and boundary checking
+            player.onUpdate(() => {
+                if (player.angle === undefined) {
+                    player.angle = 0;
+                }
+                
+                if (gravityUp) {
+                    player.angle = lerp(player.angle, 180, dt() * 5);
+                } else {
+                    player.angle = lerp(player.angle, 0, dt() * 5);
+                }
+                
+                // Keep player in bounds
+                if (player.pos.x < 30) player.pos.x = 30;
+                if (player.pos.x > width() - 30) player.pos.x = width() - 30;
+                
+                // Reset if player falls out of bounds (emergency fallback)
+                if (player.pos.y > height() + 100 || player.pos.y < -100) {
+                    player.pos = vec2(125, height() - 150);
+                    gravityUp = false;
+                    setGravity(GRAVITY_STRENGTH);
+                    gravityIndicator.text = "GRAVITY: DOWN";
+                    gravityIndicator.color = rgb(255, 255, 255);
+                }
+            });
+
+            // Background particles
+            loop(0.1, () => {
+                add([
+                    circle(1),
+                    pos(rand(0, width()), gravityUp ? height() : 0),
+                    color(100, 100, 150),
+                    lifespan(5),
+                    move(vec2(0, gravityUp ? -20 : 20)),
+                    opacity(0.3)
+                ]);
+            });
+
+            // Debug mode toggle
+            onKeyPress("f1", () => {
+                debug.inspect = !debug.inspect;
+            });
+        });
+
+        // Start menu scene
+        scene("menu", () => {
+            add([
+                text("GRAVITY FLIPPER", { size: 48 }),
+                pos(center().sub(0, 100)),
+                anchor("center"),
+                color(255, 215, 0)
+            ]);
+            
+            add([
+                text("INFINITE LEVELS", { size: 24 }),
+                pos(center().sub(0, 50)),
+                anchor("center"),
+                color(150, 255, 150)
+            ]);
+            
+            add([
+                text("Collect all stars in each level!", { size: 18 }),
+                pos(center()),
+                anchor("center"),
+                color(200, 200, 200)
+            ]);
+            
+            add([
+                text("Avoid the deadly RED platforms!", { size: 16 }),
+                pos(center().add(0, 25)),
+                anchor("center"),
+                color(255, 150, 150)
+            ]);
+            
+            add([
+                text("ARROW KEYS: Move | SPACE: Flip Gravity", { size: 14 }),
+                pos(center().add(0, 50)),
+                anchor("center"),
+                color(180, 180, 180)
+            ]);
+            
+            add([
+                text("Press ENTER to start", { size: 20 }),
+                pos(center().add(0, 90)),
+                anchor("center"),
+                color(255, 255, 255)
+            ]);
+            
+            // Animated background
+            loop(0.2, () => {
+                add([
+                    circle(rand(2, 5)),
+                    pos(rand(0, width()), rand(0, height())),
+                    color(rand(50, 150), rand(50, 150), rand(100, 200)),
+                    lifespan(3),
+                    move(vec2(rand(-30, 30), rand(-30, 30))),
+                    opacity(0.3)
+                ]);
+            });
+            
+            onKeyPress("enter", () => {
+                currentLevel = 1;
+                totalScore = 0;
+                levelSeed = Date.now() % 10000;
+                go("game");
+            });
+        });
+
+        // Game Over scene
+        scene("gameOver", (data) => {
+            add([
+                text("GAME OVER", { size: 48 }),
+                pos(center().sub(0, 100)),
+                anchor("center"),
+                color(255, 100, 100)
+            ]);
+            
+            add([
+                text("You touched a deadly platform!", { size: 20 }),
+                pos(center().sub(0, 50)),
+                anchor("center"),
+                color(255, 150, 150)
+            ]);
+            
+            add([
+                text(`Reached Level: ${data.level}`, { size: 24 }),
+                pos(center()),
+                anchor("center"),
+                color(255, 255, 0)
+            ]);
+            
+            add([
+                text(`Final Score: ${data.score}`, { size: 24 }),
+                pos(center().add(0, 30)),
+                anchor("center"),
+                color(255, 200, 100)
+            ]);
+            
+            add([
+                text("Press R to restart or M for menu", { size: 16 }),
+                pos(center().add(0, 80)),
+                anchor("center"),
+                color(200, 200, 200)
+            ]);
+            
+            // Falling red particles effect
+            loop(0.1, () => {
+                add([
+                    circle(rand(2, 4)),
+                    pos(rand(0, width()), -10),
+                    color(255, rand(50, 150), 50),
+                    lifespan(4),
+                    move(vec2(rand(-20, 20), rand(100, 200))),
+                    opacity(rand(0.5, 0.9))
+                ]);
+            });
+            
+            // Input handlers
+            onKeyPress("r", () => {
+                currentLevel = 1;
+                totalScore = 0;
+                levelSeed = Date.now() % 10000;
+                go("game");
+            });
+            
+            onKeyPress("m", () => {
+                go("menu");
+            });
+        });
+
+        // Start with menu
+        go("menu");
+    </script>
+</body>
+</html>
